@@ -1897,18 +1897,20 @@ class _HomeContentState extends State<HomeContent> {
 
       final jobs = snapshot.docs
           .where((doc) {
-        final status = doc.data().toString().contains('status') ? doc['status'] : null;
+        final data = doc.data();
+        final status = data['status'];
         return status != 'expired' && status != 'removed' && status != 'completed';
       })
           .map((doc) {
+        final data = doc.data();
         return {
           'id': doc.id,
-          'title': doc['title'] ?? 'Untitled Job',
-          'skill': doc['skill'] ?? '',
-          'location': doc['location'] ?? 'Unknown',
-          'wage': doc['wage'] ?? '0',
-          'date': doc['startDate'] ?? '',
-          'description': doc['description'] ?? '',
+          'title': data['title'] ?? 'Untitled Job',
+          'skill': data['skill'] ?? '',
+          'location': data['location'] ?? 'Unknown',
+          'wage': data['wage'] ?? '0',
+          'date': data['startDate'] ?? '',
+          'description': data['description'] ?? '',
         };
       }).toList();
 
