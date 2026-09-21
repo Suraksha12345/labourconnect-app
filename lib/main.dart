@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -1649,6 +1650,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  DateTime? _lastBackPressed;
 
   List<Widget> get _screens => [
     const HomeContent(),
@@ -1658,21 +1660,43 @@ class _HomeScreenState extends State<HomeScreen> {
   ];
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: _screens[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: Colors.white,
-        selectedItemColor: const Color(0xFF185FA5),
-        unselectedItemColor: Colors.grey,
-        type: BottomNavigationBarType.fixed,
-        currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
-        items: [
-          BottomNavigationBarItem(icon: const Icon(Icons.home_outlined), activeIcon: const Icon(Icons.home), label: t('home')),
-          BottomNavigationBarItem(icon: const Icon(Icons.work_outline), activeIcon: const Icon(Icons.work), label: t('my_jobs')),
-          BottomNavigationBarItem(icon: const Icon(Icons.smart_toy_outlined), activeIcon: const Icon(Icons.smart_toy), label: t('ai_help')),
-          BottomNavigationBarItem(icon: const Icon(Icons.person_outline), activeIcon: const Icon(Icons.person), label: t('profile')),
-        ],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        // Step 1: if not on the Home tab, go back to Home tab first
+        if (_selectedIndex != 0) {
+          setState(() => _selectedIndex = 0);
+          return;
+        }
+        // Step 2: already on Home tab — require a second back press to exit
+        final now = DateTime.now();
+        if (_lastBackPressed == null ||
+            now.difference(_lastBackPressed!) > const Duration(seconds: 2)) {
+          _lastBackPressed = now;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Press back again to exit'), duration: Duration(seconds: 2)),
+          );
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Scaffold(
+        body: _screens[_selectedIndex],
+        bottomNavigationBar: BottomNavigationBar(
+          backgroundColor: Colors.white,
+          selectedItemColor: const Color(0xFF185FA5),
+          unselectedItemColor: Colors.grey,
+          type: BottomNavigationBarType.fixed,
+          currentIndex: _selectedIndex,
+          onTap: (index) => setState(() => _selectedIndex = index),
+          items: [
+            BottomNavigationBarItem(icon: const Icon(Icons.home_outlined), activeIcon: const Icon(Icons.home), label: t('home')),
+            BottomNavigationBarItem(icon: const Icon(Icons.work_outline), activeIcon: const Icon(Icons.work), label: t('my_jobs')),
+            BottomNavigationBarItem(icon: const Icon(Icons.smart_toy_outlined), activeIcon: const Icon(Icons.smart_toy), label: t('ai_help')),
+            BottomNavigationBarItem(icon: const Icon(Icons.person_outline), activeIcon: const Icon(Icons.person), label: t('profile')),
+          ],
+        ),
       ),
     );
   }
@@ -3649,6 +3673,193 @@ class _PostJobScreenState extends State<PostJobScreen> {
     ]);
   }
 }
+
+// ================================================
+// EDIT JOB SCREEN (new — contractor can fix a mistaken post)
+// ================================================
+class EditJobScreen extends StatefulWidget {
+  final String jobId;
+  final Map<String, dynamic> jobData;
+  const EditJobScreen({super.key, required this.jobId, required this.jobData});
+
+  @override
+  State<EditJobScreen> createState() => _EditJobScreenState();
+}
+
+class _EditJobScreenState extends State<EditJobScreen> {
+  late TextEditingController _titleController;
+  late TextEditingController _locationController;
+  late TextEditingController _wageController;
+  late TextEditingController _workersController;
+  late TextEditingController _dateController;
+  late TextEditingController _daysController;
+  late TextEditingController _descriptionController;
+  late TextEditingController _additionalController;
+  List<String> selectedSkills = [];
+  final List<String> skills = [
+    'Construction', 'Farming', 'Painting', 'Loading', 'Plumbing', 'Electrical',
+    'Masonry', 'Carpentry', 'Welding', 'Driving', 'Cooking', 'Cleaning',
+    'Security', 'Gardening', 'Mechanical Work', 'Tailoring', 'Housekeeping',
+    'Factory Work', 'Warehouse Work',
+  ];
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = widget.jobData;
+    _titleController = TextEditingController(text: d['title'] ?? '');
+    _locationController = TextEditingController(text: d['location'] ?? '');
+    _wageController = TextEditingController(text: d['wage']?.toString() ?? '');
+    _workersController = TextEditingController(text: d['workers']?.toString() ?? '');
+    _dateController = TextEditingController(text: d['startDate'] ?? '');
+    _daysController = TextEditingController(text: d['days'] ?? '');
+    _descriptionController = TextEditingController(text: d['description'] ?? '');
+    _additionalController = TextEditingController(text: d['additionalDetails'] ?? '');
+    final skillsData = d['skills'];
+    if (skillsData is List) {
+      selectedSkills = List<String>.from(skillsData);
+    } else if (d['skill'] != null && d['skill'].toString().isNotEmpty) {
+      selectedSkills = [d['skill'].toString()];
+    }
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _locationController.dispose();
+    _wageController.dispose();
+    _workersController.dispose();
+    _dateController.dispose();
+    _daysController.dispose();
+    _descriptionController.dispose();
+    _additionalController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveChanges() async {
+    setState(() => _isSaving = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$AI_BACKEND_URL/actions/update-job'),
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+          'X-API-Key': 'LC_MangaloreLabour_9x7k2m',
+        },
+        body: jsonEncode({
+          'jobId': widget.jobId,
+          'title': _titleController.text.trim(),
+          'location': _locationController.text.trim(),
+          'wage': _wageController.text.trim(),
+          'workers': _workersController.text.trim(),
+          'startDate': _dateController.text.trim(),
+          'days': _daysController.text.trim(),
+          'description': _descriptionController.text.trim(),
+          'additionalDetails': _additionalController.text.trim(),
+          'skills': selectedSkills,
+        }),
+      );
+      final data = jsonDecode(response.body);
+      if (data['success'] == true) {
+        if (mounted) Navigator.pop(context, true);
+      } else {
+        setState(() => _isSaving = false);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(data['error'] ?? 'Could not save changes')),
+          );
+        }
+      }
+    } catch (e) {
+      setState(() => _isSaving = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFF),
+      appBar: AppBar(
+        backgroundColor: Colors.white, elevation: 0,
+        leading: IconButton(icon: const Icon(Icons.arrow_back_ios, color: Color(0xFF27500A)), onPressed: () => Navigator.pop(context)),
+        title: const Text('Edit Job', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Color(0xFF27500A))),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _buildField('Job Title', _titleController),
+          const SizedBox(height: 14),
+          _buildField('Location', _locationController),
+          const SizedBox(height: 14),
+          _buildField('Wage per Day (₹)', _wageController, keyboardType: TextInputType.number),
+          const SizedBox(height: 14),
+          _buildField('Workers Needed', _workersController, keyboardType: TextInputType.number),
+          const SizedBox(height: 14),
+          _buildField('Start Date', _dateController),
+          const SizedBox(height: 14),
+          _buildField('Number of Days', _daysController),
+          const SizedBox(height: 14),
+          _buildField('Description', _descriptionController),
+          const SizedBox(height: 14),
+          _buildField('Additional Details', _additionalController),
+          const SizedBox(height: 20),
+          const Text('Skill Required', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey)),
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: skills.map((skill) {
+            final isSelected = selectedSkills.contains(skill);
+            return GestureDetector(
+              onTap: () => setState(() {
+                if (isSelected) {
+                  selectedSkills.remove(skill);
+                } else {
+                  selectedSkills.add(skill);
+                }
+              }),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected ? const Color(0xFF27500A) : const Color(0xFFEAF3DE),
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(color: isSelected ? const Color(0xFF27500A) : const Color(0xFF97C459)),
+                ),
+                child: Text(skill, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: isSelected ? Colors.white : const Color(0xFF27500A))),
+              ),
+            );
+          }).toList()),
+          const SizedBox(height: 30),
+          GestureDetector(
+            onTap: _isSaving ? null : _saveChanges,
+            child: Container(
+              width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 16),
+              decoration: BoxDecoration(color: const Color(0xFF27500A), borderRadius: BorderRadius.circular(14)),
+              child: Center(child: _isSaving
+                  ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                  : const Text('Save Changes', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white))),
+            ),
+          ),
+          const SizedBox(height: 20),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildField(String label, TextEditingController controller, {TextInputType keyboardType = TextInputType.text}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
+      const SizedBox(height: 6),
+      Container(
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(controller: controller, keyboardType: keyboardType,
+            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
+      ),
+    ]);
+  }
+}
+
 // ================================================
 // CONTRACTOR HOME SCREEN
 // ================================================
@@ -3660,6 +3871,7 @@ class ContractorHomeScreen extends StatefulWidget {
 }
 class _ContractorHomeScreenState extends State<ContractorHomeScreen> {
   int _selectedIndex = 0;
+  DateTime? _lastBackPressed;
 
   List<Widget> get _screens => [
     const MyPostedJobsScreen(),
@@ -3668,19 +3880,39 @@ class _ContractorHomeScreenState extends State<ContractorHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: _screens[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: Colors.white,
-        selectedItemColor: const Color(0xFF27500A),
-        unselectedItemColor: Colors.grey,
-        type: BottomNavigationBarType.fixed,
-        currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.work_outline), activeIcon: Icon(Icons.work), label: 'My Jobs'),
-          BottomNavigationBarItem(icon: Icon(Icons.add_circle_outline), activeIcon: Icon(Icons.add_circle), label: 'Post Job'),
-        ],
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_selectedIndex != 0) {
+          setState(() => _selectedIndex = 0);
+          return;
+        }
+        final now = DateTime.now();
+        if (_lastBackPressed == null ||
+            now.difference(_lastBackPressed!) > const Duration(seconds: 2)) {
+          _lastBackPressed = now;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Press back again to exit'), duration: Duration(seconds: 2)),
+          );
+          return;
+        }
+        SystemNavigator.pop();
+      },
+      child: Scaffold(
+        body: _screens[_selectedIndex],
+        bottomNavigationBar: BottomNavigationBar(
+          backgroundColor: Colors.white,
+          selectedItemColor: const Color(0xFF27500A),
+          unselectedItemColor: Colors.grey,
+          type: BottomNavigationBarType.fixed,
+          currentIndex: _selectedIndex,
+          onTap: (index) => setState(() => _selectedIndex = index),
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.work_outline), activeIcon: Icon(Icons.work), label: 'My Jobs'),
+            BottomNavigationBarItem(icon: Icon(Icons.add_circle_outline), activeIcon: Icon(Icons.add_circle), label: 'Post Job'),
+          ],
+        ),
       ),
     );
   }
@@ -3841,6 +4073,24 @@ class _MyPostedJobsScreenState extends State<MyPostedJobsScreen> {
               child: Row(
                 children: [
                   Expanded(child: Text(job['title'], style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
+                  // Edit button — opens without triggering the card's own onTap
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () async {
+                      final doc = await FirebaseFirestore.instance.collection('jobs').doc(job['id']).get();
+                      if (doc.exists && context.mounted) {
+                        final updated = await Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (context) => EditJobScreen(jobId: job['id'], jobData: doc.data()!)),
+                        );
+                        if (updated == true) _loadMyJobs();
+                      }
+                    },
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 6),
+                      child: Icon(Icons.edit_outlined, size: 18, color: Color(0xFF185FA5)),
+                    ),
+                  ),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(color: const Color(0xFFEAF3DE), borderRadius: BorderRadius.circular(99)),
@@ -4506,6 +4756,7 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   Map<String, dynamic>? _workerData;
+  String? _workerDocId;
   bool _isLoading = true;
   int _jobsDoneCount = 0;
   double _avgRating = 0.0;
@@ -4592,6 +4843,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         if (phone10 == workerPhone10) {
           setState(() {
             _workerData = doc.data();
+            _workerDocId = doc.id;
             _isLoading = false;
           });
           return;
@@ -4617,7 +4869,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     // Use real data if available, fallback to placeholder
     final name = _workerData?['name'] ?? 'Worker';
-    final skill = _workerData?['skill'] ?? '—';
+
+    // Fixed: read the multi-skill "skills" array (falling back to the
+    // old single "skill" field) and join them for display instead of
+    // always reading the missing "skill" field and showing "—".
+    final skillsList = (_workerData?['skills'] is List)
+        ? List<String>.from(_workerData!['skills'])
+        : (_workerData?['skill'] != null && _workerData!['skill'].toString().isNotEmpty
+        ? [_workerData!['skill'].toString()]
+        : <String>[]);
+    final skill = skillsList.isNotEmpty ? skillsList.join(', ') : '—';
+
     final location = _workerData?['location'] ?? '—';
     final experience = _workerData?['experience'] ?? '—';
     final phone = _workerData?['phone']
@@ -4711,7 +4973,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               const SizedBox(height: 20),
               GestureDetector(
-                onTap: () {},
+                onTap: () async {
+                  // Fixed: Edit Profile now opens a real edit screen instead
+                  // of doing nothing.
+                  if (_workerDocId == null || _workerData == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Profile not found yet, please wait...')),
+                    );
+                    return;
+                  }
+                  final updated = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => EditProfileScreen(
+                        docId: _workerDocId!,
+                        initialData: _workerData!,
+                      ),
+                    ),
+                  );
+                  if (updated == true) {
+                    _loadProfile();
+                    _loadRealStats();
+                  }
+                },
                 child: Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(vertical: 14),
@@ -4768,6 +5052,169 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 }
+
+// ================================================
+// EDIT PROFILE SCREEN (new — fixes the non-working Edit Profile button)
+// ================================================
+class EditProfileScreen extends StatefulWidget {
+  final String docId;
+  final Map<String, dynamic> initialData;
+  const EditProfileScreen({super.key, required this.docId, required this.initialData});
+
+  @override
+  State<EditProfileScreen> createState() => _EditProfileScreenState();
+}
+
+class _EditProfileScreenState extends State<EditProfileScreen> {
+  late TextEditingController _nameController;
+  late TextEditingController _locationController;
+  late TextEditingController _experienceController;
+  List<String> selectedSkills = [];
+  final List<String> skills = [
+    'Mason', 'Painter', 'Plumber', 'Carpenter', 'Farmer', 'Loader',
+    'Electrician', 'Welder', 'Driver', 'Cook', 'Cleaner', 'Security Guard',
+    'Helper', 'Gardener', 'Mechanic', 'Tailor', 'Construction Laborer',
+    'Housekeeping', 'Factory Worker', 'Warehouse Worker',
+  ];
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = widget.initialData;
+    _nameController = TextEditingController(text: d['name'] ?? '');
+    _locationController = TextEditingController(text: d['location'] ?? '');
+    _experienceController = TextEditingController(text: d['experience']?.toString() ?? '');
+    final skillsData = d['skills'];
+    if (skillsData is List) {
+      selectedSkills = List<String>.from(skillsData);
+    } else if (d['skill'] != null && d['skill'].toString().isNotEmpty) {
+      selectedSkills = [d['skill'].toString()];
+    }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _locationController.dispose();
+    _experienceController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveChanges() async {
+    if (selectedSkills.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select at least one skill')),
+      );
+      return;
+    }
+    setState(() => _isSaving = true);
+    try {
+      final response = await http.post(
+        Uri.parse('$AI_BACKEND_URL/actions/update-worker-profile'),
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+          'X-API-Key': 'LC_MangaloreLabour_9x7k2m',
+        },
+        body: jsonEncode({
+          'docId': widget.docId,
+          'name': _nameController.text.trim(),
+          'location': _locationController.text.trim(),
+          'experience': _experienceController.text.trim(),
+          'skills': selectedSkills,
+        }),
+      );
+      final data = jsonDecode(response.body);
+      if (data['success'] == true) {
+        if (mounted) Navigator.pop(context, true);
+      } else {
+        setState(() => _isSaving = false);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(data['error'] ?? 'Could not save changes')),
+          );
+        }
+      }
+    } catch (e) {
+      setState(() => _isSaving = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFF),
+      appBar: AppBar(
+        backgroundColor: Colors.white, elevation: 0,
+        leading: IconButton(icon: const Icon(Icons.arrow_back_ios, color: Color(0xFF185FA5)), onPressed: () => Navigator.pop(context)),
+        title: const Text('Edit Profile', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Color(0xFF0C447C))),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _buildField('Full Name', _nameController),
+          const SizedBox(height: 14),
+          _buildField('Village / Location', _locationController),
+          const SizedBox(height: 14),
+          _buildField('Years of Experience', _experienceController, keyboardType: TextInputType.number),
+          const SizedBox(height: 20),
+          const Text('Skills', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey)),
+          const SizedBox(height: 10),
+          Wrap(spacing: 8, runSpacing: 8, children: skills.map((skill) {
+            final isSelected = selectedSkills.contains(skill);
+            return GestureDetector(
+              onTap: () => setState(() {
+                if (isSelected) {
+                  selectedSkills.remove(skill);
+                } else {
+                  selectedSkills.add(skill);
+                }
+              }),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected ? const Color(0xFF185FA5) : const Color(0xFFE6F1FB),
+                  borderRadius: BorderRadius.circular(99),
+                  border: Border.all(color: isSelected ? const Color(0xFF185FA5) : const Color(0xFFB5D4F4)),
+                ),
+                child: Text(skill, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: isSelected ? Colors.white : const Color(0xFF0C447C))),
+              ),
+            );
+          }).toList()),
+          const SizedBox(height: 30),
+          GestureDetector(
+            onTap: _isSaving ? null : _saveChanges,
+            child: Container(
+              width: double.infinity, padding: const EdgeInsets.symmetric(vertical: 16),
+              decoration: BoxDecoration(color: const Color(0xFF185FA5), borderRadius: BorderRadius.circular(14)),
+              child: Center(child: _isSaving
+                  ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                  : const Text('Save Changes', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.white))),
+            ),
+          ),
+          const SizedBox(height: 20),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildField(String label, TextEditingController controller, {TextInputType keyboardType = TextInputType.text}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
+      const SizedBox(height: 6),
+      Container(
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(controller: controller, keyboardType: keyboardType,
+            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
+      ),
+    ]);
+  }
+}
+
 // ================================================
 // OTP LOGIN SCREEN — FIXED VERSION
 // ================================================
