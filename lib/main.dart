@@ -10,6 +10,162 @@ import 'dart:async';
 import 'dart:math';
 
 // ================================================
+// INPUT VALIDATION (formatters + validators)
+// ================================================
+final fmtDigits = FilteringTextInputFormatter.digitsOnly;
+// Letters of ANY language (English, Kannada, Hindi...), spaces, dot, apostrophe
+final fmtName = FilteringTextInputFormatter.allow(RegExp(r"[\p{L}\p{M} .']", unicode: true));
+
+class UpperCaseFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) =>
+      newValue.copyWith(text: newValue.text.toUpperCase());
+}
+
+const _verhoeffD = [
+  [0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],
+  [3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],[5,9,8,7,6,0,4,3,2,1],
+  [6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],
+  [9,8,7,6,5,4,3,2,1,0]];
+const _verhoeffP = [
+  [0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],
+  [8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],[4,2,8,6,5,7,3,9,0,1],
+  [2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]];
+const _stateCodes = {
+  'AN','AP','AR','AS','BR','CG','CH','DD','DL','DN','GA','GJ','HP','HR','JH','JK',
+  'KA','KL','LA','LD','MH','ML','MN','MP','MZ','NL','OD','OR','PB','PY','RJ','SK',
+  'TN','TR','TS','UK','UP','WB'};
+
+class Validators {
+  static bool _allSame(String s) => s.split('').toSet().length == 1;
+  static final RegExp _hasLetter = RegExp(r'\p{L}', unicode: true);
+
+  /// Formatters for the Government-ID box, depending on the selected ID type.
+  static List<TextInputFormatter> govIdFormatters(String idType) {
+    switch (idType) {
+      case 'PAN':
+        return [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')), UpperCaseFormatter()];
+      case 'Driving Licence':
+        return [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9 \-]')), UpperCaseFormatter()];
+      default: // Aadhaar - digits and the auto-inserted spaces
+        return [FilteringTextInputFormatter.allow(RegExp(r'[0-9 ]'))];
+    }
+  }
+
+  /// Free text such as job title, location, company, description.
+  static String? text(String? v, String label, {int min = 2}) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Please enter $label';
+    if (s.length < min) return 'Please enter a valid $label';
+    if (!_hasLetter.hasMatch(s)) return 'Please enter a valid $label';
+    return null;
+  }
+
+  static String? name(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Please enter your name';
+    if (s.length < 2) return 'Name is too short';
+    if (!RegExp(r"^[\p{L}\p{M} .']+$", unicode: true).hasMatch(s) || !_hasLetter.hasMatch(s)) {
+      return 'Name can contain only letters';
+    }
+    return null;
+  }
+
+  static String? phone(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Please enter mobile number';
+    if (!RegExp(r'^\d+$').hasMatch(s)) return 'Mobile number can contain only digits';
+    if (s.length != 10) return 'Mobile number must be 10 digits';
+    if (!RegExp(r'^[6-9]').hasMatch(s)) return 'Mobile number must start with 6, 7, 8 or 9';
+    if (_allSame(s)) return 'Enter a valid mobile number';
+    return null;
+  }
+
+  static String? aadhaar(String? v) {
+    final s = (v ?? '').replaceAll(' ', '');
+    if (s.isEmpty) return 'Please enter Aadhaar number';
+    if (!RegExp(r'^\d+$').hasMatch(s)) return 'Aadhaar can contain only digits';
+    if (s.length != 12) return 'Aadhaar must be 12 digits';
+    if (!RegExp(r'^[2-9]').hasMatch(s)) return 'Aadhaar cannot start with 0 or 1';
+    var c = 0;
+    final rev = s.split('').reversed.toList();
+    for (var i = 0; i < rev.length; i++) {
+      c = _verhoeffD[c][_verhoeffP[i % 8][int.parse(rev[i])]];
+    }
+    return c == 0 ? null : 'Invalid Aadhaar number';
+  }
+
+  static String? pan(String? v) {
+    final s = (v ?? '').trim().toUpperCase();
+    if (s.isEmpty) return 'Please enter PAN number';
+    if (s.length != 10) return 'PAN must be 10 characters';
+    if (!RegExp(r'^[A-Z]{3}[ABCFGHLJPT][A-Z][0-9]{4}[A-Z]$').hasMatch(s)) {
+      return 'Invalid PAN (format: ABCPE1234F)';
+    }
+    if (s.substring(5, 9) == '0000') return 'Invalid PAN number';
+    return null;
+  }
+
+  static String? drivingLicence(String? v) {
+    final s = (v ?? '').toUpperCase().replaceAll(RegExp(r'[\s\-]'), '');
+    if (s.isEmpty) return 'Please enter driving licence number';
+    final m = RegExp(r'^([A-Z]{2})(\d{2})(\d{4})(\d{7})$').firstMatch(s);
+    if (m == null) return 'Invalid format (e.g. KA01 20230001234)';
+    final year = int.parse(m.group(3)!);
+    if (!_stateCodes.contains(m.group(1)) ||
+        m.group(2) == '00' ||
+        year < 1950 ||
+        year > DateTime.now().year ||
+        int.parse(m.group(4)!) == 0) {
+      return 'Invalid driving licence number';
+    }
+    return null;
+  }
+
+  /// idType: 'Aadhaar' | 'PAN' | 'Driving Licence'
+  static String? govId(String idType, String? v) {
+    switch (idType) {
+      case 'PAN':
+        return pan(v);
+      case 'Driving Licence':
+        return drivingLicence(v);
+      default:
+        return aadhaar(v);
+    }
+  }
+
+  static String? intInRange(String? v, String label, int min, int max) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Please enter $label';
+    final n = int.tryParse(s);
+    if (n == null) return '$label can contain only numbers';
+    if (n < min || n > max) return '$label must be between $min and $max';
+    return null;
+  }
+
+  /// "3 days", "1 week", "5" ... must have a number > 0 (or at least a word)
+  static String? duration(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Please enter number of days';
+    final m = RegExp(r'\d+').firstMatch(s);
+    if (m != null) {
+      if (int.parse(m.group(0)!) == 0) return 'Number of days must be more than 0';
+      return null;
+    }
+    return _hasLetter.hasMatch(s) ? null : 'Please enter a valid number of days';
+  }
+
+  static String? startDate(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Please enter start date';
+    if (s.length < 3 || !(_hasLetter.hasMatch(s) || RegExp(r'\d').hasMatch(s))) {
+      return 'Please enter a valid start date';
+    }
+    return null;
+  }
+}
+
+// ================================================
 // LANGUAGE SYSTEM
 // ================================================
 String currentLanguage = 'English';
@@ -743,7 +899,7 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
     },
     'Driving Licence': {
       'hint': 'KA01 20230001234',
-      'maxLength': 16,
+      'maxLength': 20,
       'keyboard': TextInputType.text,
       'format': 'KA01 YYYYXXXXXXX',
     },
@@ -756,6 +912,29 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
   final TextEditingController _govtIdController = TextEditingController();
   bool _isSaving = false;
   bool _consentGiven = false;
+  final Map<String, String?> _errors = {};
+
+  bool _validateAll() {
+    final errs = <String, String?>{
+      'name': Validators.name(_nameController.text),
+      'phone': Validators.phone(_phoneController.text),
+      'location': Validators.text(_locationController.text, 'village / location'),
+      'experience': Validators.intInRange(_experienceController.text, 'Experience', 0, 60),
+      'govt': Validators.govId(selectedIdType, _govtIdController.text),
+    }..removeWhere((k, v) => v == null);
+    setState(() {
+      _errors
+        ..clear()
+        ..addAll(errs);
+    });
+    if (errs.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(errs.values.first!), backgroundColor: const Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -817,6 +996,9 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
               hint: t('full_name_hint'),
               icon: Icons.person_outline,
               controller: _nameController,
+              formatters: [fmtName],
+              maxLength: 50,
+              errorKey: 'name',
             ),
             const SizedBox(height: 14),
             _buildInputField(
@@ -825,7 +1007,9 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
               icon: Icons.phone_outlined,
               keyboardType: TextInputType.number,
               controller: _phoneController,
-              //maxLength: 10,
+              formatters: [fmtDigits],
+              maxLength: 10,
+              errorKey: 'phone',
             ),
             const SizedBox(height: 14),
             _buildInputField(
@@ -833,6 +1017,8 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
               hint: t('village_hint'),
               icon: Icons.location_on_outlined,
               controller: _locationController,
+              maxLength: 60,
+              errorKey: 'location',
             ),
             const SizedBox(height: 14),
             _buildInputField(
@@ -841,6 +1027,9 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
               icon: Icons.work_history_outlined,
               keyboardType: TextInputType.number,
               controller: _experienceController,
+              formatters: [fmtDigits],
+              maxLength: 2,
+              errorKey: 'experience',
             ),
             const SizedBox(height: 14),
 
@@ -866,6 +1055,7 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
                           setState(() {
                             selectedIdType = type;
                             _govtIdController.clear();
+                            _errors.remove('govt');
                           });
                         },
                         child: Container(
@@ -934,10 +1124,12 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
                         ? TextInputType.number
                         : TextInputType.visiblePassword,
                     maxLength: idTypes[selectedIdType]!['maxLength'],
+                    inputFormatters: Validators.govIdFormatters(selectedIdType),
                     textCapitalization: selectedIdType == 'PAN'
                         ? TextCapitalization.characters
                         : TextCapitalization.none,
                     onChanged: (value) {
+                      if (_errors['govt'] != null) setState(() => _errors.remove('govt'));
                       if (selectedIdType == 'Aadhaar') {
                         final digits = value.replaceAll(' ', '');
                         if (digits.length <= 12) {
@@ -971,6 +1163,7 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
                       ),
                       border: InputBorder.none,
                       counterText: '',
+                      errorText: _errors['govt'],
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 14,
                         vertical: 14,
@@ -1118,9 +1311,10 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
               onTap: (_isSaving || selectedSkills.isEmpty || !_consentGiven)
                   ? null
                   : () async {
+                if (!_validateAll()) return;
                 setState(() => _isSaving = true);
 
-                final enteredId = _govtIdController.text.trim();
+                final enteredId = _govtIdController.text.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
 
                 try {
                   // Encrypt/hash the govt ID via the backend before storing or checking
@@ -1138,7 +1332,7 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
                     setState(() => _isSaving = false);
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Could not process ID. Please try again.')),
+                        SnackBar(content: Text((encryptData['error'] ?? 'Could not process ID. Please try again.').toString())),
                       );
                     }
                     return;
@@ -1264,42 +1458,39 @@ class _WorkerRegistrationScreenState extends State<WorkerRegistrationScreen> {
     required IconData icon,
     TextInputType keyboardType = TextInputType.text,
     TextEditingController? controller,
+    int? maxLength,
+    List<TextInputFormatter>? formatters,
+    String? errorKey,
   }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-            color: Colors.grey,
-          ),
-        ),
-        const SizedBox(height: 6),
-        Container(
-          decoration: BoxDecoration(
+    final err = errorKey == null ? null : _errors[errorKey];
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
+      const SizedBox(height: 6),
+      Container(
+        decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFB5D4F4), width: 1),
-          ),
-          child: TextField(
+            border: Border.all(color: err != null ? const Color(0xFFE24B4A) : const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(
             controller: controller,
             keyboardType: keyboardType,
+            maxLength: maxLength,
+            inputFormatters: formatters,
+            onChanged: (_) {
+              if (errorKey != null && _errors[errorKey] != null) {
+                setState(() => _errors.remove(errorKey));
+              }
+            },
             decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
-              prefixIcon: Icon(icon, color: const Color(0xFF185FA5), size: 20),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 14,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
+                hintText: hint,
+                hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
+                prefixIcon: Icon(icon, color: const Color(0xFF185FA5), size: 20),
+                border: InputBorder.none,
+                counterText: '',
+                errorText: err,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
+      ),
+    ]);
   }
 }
 // ================================================
@@ -1351,7 +1542,7 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
     },
     'Driving Licence': {
       'hint': 'KA01 20230001234',
-      'maxLength': 16,
+      'maxLength': 20,
       'keyboard': TextInputType.text,
       'format': 'KA01 YYYYXXXXXXX',
     },
@@ -1363,6 +1554,35 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
   final TextEditingController _govtIdController = TextEditingController();
   bool _isSaving = false;
   bool _consentGiven = false;
+  final Map<String, String?> _errors = {};
+
+  bool _validateAll() {
+    final errs = <String, String?>{
+      'name': Validators.name(_nameController.text),
+      'phone': Validators.phone(_phoneController.text),
+      'company': Validators.text(_companyController.text, 'company / business name'),
+      'location': Validators.text(_locationController.text, 'work location'),
+      'govt': Validators.govId(selectedIdType, _govtIdController.text),
+    }..removeWhere((k, v) => v == null);
+    setState(() {
+      _errors
+        ..clear()
+        ..addAll(errs);
+    });
+    if (errs.isEmpty && selectedWork.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select the type of work'), backgroundColor: Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    if (errs.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(errs.values.first!), backgroundColor: const Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    return true;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1379,13 +1599,13 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
           Container(padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: const Color(0xFFEAF3DE), borderRadius: BorderRadius.circular(12)),
               child: const Row(children: [Icon(Icons.info_outline, color: Color(0xFF27500A), size: 18), SizedBox(width: 8), Expanded(child: Text('Post jobs and find verified workers near you instantly', style: TextStyle(fontSize: 12, color: Color(0xFF27500A))))])),
           const SizedBox(height: 20),
-          _buildInputField(label: t('your_full_name'), hint: t('your_name_hint'), icon: Icons.person_outline, controller: _nameController),
+          _buildInputField(label: t('your_full_name'), hint: t('your_name_hint'), icon: Icons.person_outline, controller: _nameController, formatters: [fmtName], maxLength: 50, errorKey: 'name'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('phone_number'), hint: '+91 9876543210', icon: Icons.phone_outlined, keyboardType: TextInputType.number, controller: _phoneController, maxLength: 10),
+          _buildInputField(label: t('phone_number'), hint: '+91 9876543210', icon: Icons.phone_outlined, keyboardType: TextInputType.number, controller: _phoneController, maxLength: 10, formatters: [fmtDigits], errorKey: 'phone'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('company_name'), hint: t('company_hint'), icon: Icons.business_outlined, controller: _companyController),
+          _buildInputField(label: t('company_name'), hint: t('company_hint'), icon: Icons.business_outlined, controller: _companyController, maxLength: 60, errorKey: 'company'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('work_location'), hint: t('work_location_hint'), icon: Icons.location_on_outlined, controller: _locationController),
+          _buildInputField(label: t('work_location'), hint: t('work_location_hint'), icon: Icons.location_on_outlined, controller: _locationController, maxLength: 60, errorKey: 'location'),
           const SizedBox(height: 14),
           Text(t('govt_id'), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
           const SizedBox(height: 8),
@@ -1394,7 +1614,7 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
               final isSelected = selectedIdType == type;
               return Expanded(
                 child: GestureDetector(
-                  onTap: () => setState(() { selectedIdType = type; _govtIdController.clear(); }),
+                  onTap: () => setState(() { selectedIdType = type; _govtIdController.clear(); _errors.remove('govt'); }),
                   child: Container(
                     margin: const EdgeInsets.only(right: 6),
                     padding: const EdgeInsets.symmetric(vertical: 8),
@@ -1438,10 +1658,12 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
                   ? TextInputType.number
                   : TextInputType.visiblePassword,
               maxLength: idTypes[selectedIdType]!['maxLength'],
+              inputFormatters: Validators.govIdFormatters(selectedIdType),
               textCapitalization: selectedIdType == 'PAN'
                   ? TextCapitalization.characters
                   : TextCapitalization.none,
               onChanged: (value) {
+                if (_errors['govt'] != null) setState(() => _errors.remove('govt'));
                 if (selectedIdType == 'Aadhaar') {
                   final digits = value.replaceAll(' ', '');
                   if (digits.length <= 12) {
@@ -1473,6 +1695,7 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
                 ),
                 border: InputBorder.none,
                 counterText: '',
+                errorText: _errors['govt'],
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
               ),
             ),
@@ -1520,9 +1743,10 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
           const SizedBox(height: 30),
           GestureDetector(
             onTap: (_isSaving || !_consentGiven) ? null : () async {
+              if (!_validateAll()) return;
               setState(() => _isSaving = true);
 
-              final enteredId = _govtIdController.text.trim();
+              final enteredId = _govtIdController.text.replaceAll(RegExp(r'[\s\-]'), '').toUpperCase();
 
               try {
                 final encryptResponse = await http.post(
@@ -1539,7 +1763,7 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
                   setState(() => _isSaving = false);
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Could not process ID. Please try again.')),
+                      SnackBar(content: Text((encryptData['error'] ?? 'Could not process ID. Please try again.').toString())),
                     );
                   }
                   return;
@@ -1622,16 +1846,42 @@ class _ContractorRegistrationScreenState extends State<ContractorRegistrationScr
     );
   }
 
-  Widget _buildInputField({required String label, required String hint, required IconData icon, TextInputType keyboardType = TextInputType.text, TextEditingController? controller, int? maxLength}) {
+  Widget _buildInputField({
+    required String label,
+    required String hint,
+    required IconData icon,
+    TextInputType keyboardType = TextInputType.text,
+    TextEditingController? controller,
+    int? maxLength,
+    List<TextInputFormatter>? formatters,
+    String? errorKey,
+  }) {
+    final err = errorKey == null ? null : _errors[errorKey];
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
       const SizedBox(height: 6),
       Container(
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFB5D4F4), width: 1)),
-        child: TextField(controller: controller, keyboardType: keyboardType, maxLength: maxLength,
-            decoration: InputDecoration(hintText: hint, hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
-                prefixIcon: Icon(icon, color: const Color(0xFF185FA5), size: 20), border: InputBorder.none,
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: err != null ? const Color(0xFFE24B4A) : const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(
+            controller: controller,
+            keyboardType: keyboardType,
+            maxLength: maxLength,
+            inputFormatters: formatters,
+            onChanged: (_) {
+              if (errorKey != null && _errors[errorKey] != null) {
+                setState(() => _errors.remove(errorKey));
+              }
+            },
+            decoration: InputDecoration(
+                hintText: hint,
+                hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
+                prefixIcon: Icon(icon, color: const Color(0xFF185FA5), size: 20),
+                border: InputBorder.none,
                 counterText: '',
+                errorText: err,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
       ),
     ]);
@@ -3275,6 +3525,7 @@ class _PostJobScreenState extends State<PostJobScreen> {
   final TextEditingController _descriptionController = TextEditingController();
   final TextEditingController _additionalController = TextEditingController();
   bool _isSaving = false;
+  final Map<String, String?> _errors = {};
 
   // ── wage suggestion state ──
   Timer? _wageDebounce;
@@ -3465,6 +3716,36 @@ class _PostJobScreenState extends State<PostJobScreen> {
     }
   }
 
+  bool _validateJob() {
+    final errs = <String, String?>{
+      'title': Validators.text(_titleController.text, 'job title', min: 3),
+      'location': Validators.text(_locationController.text, 'work location'),
+      'wage': Validators.intInRange(_wageController.text, 'Wage', 100, 10000),
+      'workers': Validators.intInRange(_workersController.text, 'Number of workers', 1, 500),
+      'date': Validators.startDate(_dateController.text),
+      'days': Validators.duration(_daysController.text),
+      'description': Validators.text(_descriptionController.text, 'job description', min: 10),
+    }..removeWhere((k, v) => v == null);
+    setState(() {
+      _errors
+        ..clear()
+        ..addAll(errs);
+    });
+    if (errs.isEmpty && selectedSkills.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select at least one skill'), backgroundColor: Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    if (errs.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(errs.values.first!), backgroundColor: const Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -3480,11 +3761,11 @@ class _PostJobScreenState extends State<PostJobScreen> {
           Container(padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: const Color(0xFFE6F1FB), borderRadius: BorderRadius.circular(12)),
               child: const Row(children: [Icon(Icons.smart_toy_outlined, color: Color(0xFF0C447C), size: 16), SizedBox(width: 8), Expanded(child: Text('AI will automatically verify your job before publishing to protect workers', style: TextStyle(fontSize: 12, color: Color(0xFF0C447C))))])),
           const SizedBox(height: 20),
-          _buildInputField(label: t('job_title'), hint: t('job_title_hint'), icon: Icons.work_outline, controller: _titleController),
+          _buildInputField(label: t('job_title'), hint: t('job_title_hint'), icon: Icons.work_outline, controller: _titleController, maxLength: 80, errorKey: 'title'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('work_location'), hint: t('work_location_hint'), icon: Icons.location_on_outlined, controller: _locationController),
+          _buildInputField(label: t('work_location'), hint: t('work_location_hint'), icon: Icons.location_on_outlined, controller: _locationController, maxLength: 60, errorKey: 'location'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('wage_per_day'), hint: t('wage_hint'), icon: Icons.currency_rupee, keyboardType: TextInputType.number, controller: _wageController),
+          _buildInputField(label: t('wage_per_day'), hint: t('wage_hint'), icon: Icons.currency_rupee, keyboardType: TextInputType.number, controller: _wageController, formatters: [fmtDigits], maxLength: 5, errorKey: 'wage'),
 
           // ── Wage fairness chat bubble ──
           if (_checkingWage)
@@ -3586,13 +3867,13 @@ class _PostJobScreenState extends State<PostJobScreen> {
           // ── END wage fairness chat bubble ──
 
           const SizedBox(height: 14),
-          _buildInputField(label: t('workers_needed'), hint: t('workers_hint'), icon: Icons.people_outline, keyboardType: TextInputType.number, controller: _workersController),
+          _buildInputField(label: t('workers_needed'), hint: t('workers_hint'), icon: Icons.people_outline, keyboardType: TextInputType.number, controller: _workersController, formatters: [fmtDigits], maxLength: 3, errorKey: 'workers'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('start_date'), hint: t('start_date_hint'), icon: Icons.calendar_today_outlined, controller: _dateController),
+          _buildInputField(label: t('start_date'), hint: t('start_date_hint'), icon: Icons.calendar_today_outlined, controller: _dateController, maxLength: 40, errorKey: 'date'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('num_days'), hint: t('num_days_hint'), icon: Icons.access_time_outlined, controller: _daysController),
+          _buildInputField(label: t('num_days'), hint: t('num_days_hint'), icon: Icons.access_time_outlined, controller: _daysController, maxLength: 30, errorKey: 'days'),
           const SizedBox(height: 14),
-          _buildInputField(label: t('job_desc'), hint: t('job_desc_hint'), icon: Icons.description_outlined, controller: _descriptionController),
+          _buildInputField(label: t('job_desc'), hint: t('job_desc_hint'), icon: Icons.description_outlined, controller: _descriptionController, maxLength: 500, errorKey: 'description'),
           const SizedBox(height: 14),
           _buildInputField(label: t('additional'), hint: t('additional_hint'), icon: Icons.notes_outlined, controller: _additionalController),
           const SizedBox(height: 20),
@@ -3619,6 +3900,7 @@ class _PostJobScreenState extends State<PostJobScreen> {
           const SizedBox(height: 30),
           GestureDetector(
             onTap: _isSaving ? null : () {
+              if (!_validateJob()) return;
               if (_wageVerdict == 'LOW' && !_wageAcknowledged) {
                 showDialog(
                   context: context,
@@ -3658,16 +3940,42 @@ class _PostJobScreenState extends State<PostJobScreen> {
     );
   }
 
-  Widget _buildInputField({required String label, required String hint, required IconData icon, TextInputType keyboardType = TextInputType.text, TextEditingController? controller, int? maxLength}) {
+  Widget _buildInputField({
+    required String label,
+    required String hint,
+    required IconData icon,
+    TextInputType keyboardType = TextInputType.text,
+    TextEditingController? controller,
+    int? maxLength,
+    List<TextInputFormatter>? formatters,
+    String? errorKey,
+  }) {
+    final err = errorKey == null ? null : _errors[errorKey];
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
       const SizedBox(height: 6),
       Container(
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFB5D4F4), width: 1)),
-        child: TextField(controller: controller, keyboardType: keyboardType, maxLength: maxLength,
-            decoration: InputDecoration(hintText: hint, hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
-                prefixIcon: Icon(icon, color: const Color(0xFF185FA5), size: 20), border: InputBorder.none,
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: err != null ? const Color(0xFFE24B4A) : const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(
+            controller: controller,
+            keyboardType: keyboardType,
+            maxLength: maxLength,
+            inputFormatters: formatters,
+            onChanged: (_) {
+              if (errorKey != null && _errors[errorKey] != null) {
+                setState(() => _errors.remove(errorKey));
+              }
+            },
+            decoration: InputDecoration(
+                hintText: hint,
+                hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
+                prefixIcon: Icon(icon, color: const Color(0xFF185FA5), size: 20),
+                border: InputBorder.none,
                 counterText: '',
+                errorText: err,
                 contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
       ),
     ]);
@@ -3703,6 +4011,7 @@ class _EditJobScreenState extends State<EditJobScreen> {
     'Factory Work', 'Warehouse Work',
   ];
   bool _isSaving = false;
+  final Map<String, String?> _errors = {};
 
   @override
   void initState() {
@@ -3737,7 +4046,38 @@ class _EditJobScreenState extends State<EditJobScreen> {
     super.dispose();
   }
 
+  bool _validateJob() {
+    final errs = <String, String?>{
+      'title': Validators.text(_titleController.text, 'job title', min: 3),
+      'location': Validators.text(_locationController.text, 'work location'),
+      'wage': Validators.intInRange(_wageController.text, 'Wage', 100, 10000),
+      'workers': Validators.intInRange(_workersController.text, 'Number of workers', 1, 500),
+      'date': Validators.startDate(_dateController.text),
+      'days': Validators.duration(_daysController.text),
+      'description': Validators.text(_descriptionController.text, 'job description', min: 10),
+    }..removeWhere((k, v) => v == null);
+    setState(() {
+      _errors
+        ..clear()
+        ..addAll(errs);
+    });
+    if (errs.isEmpty && selectedSkills.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select at least one skill'), backgroundColor: Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    if (errs.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(errs.values.first!), backgroundColor: const Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _saveChanges() async {
+    if (!_validateJob()) return;
     setState(() => _isSaving = true);
     try {
       final response = await http.post(
@@ -3791,19 +4131,19 @@ class _EditJobScreenState extends State<EditJobScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _buildField('Job Title', _titleController),
+          _buildField('Job Title', _titleController, maxLength: 80, errorKey: 'title'),
           const SizedBox(height: 14),
-          _buildField('Location', _locationController),
+          _buildField('Location', _locationController, maxLength: 60, errorKey: 'location'),
           const SizedBox(height: 14),
-          _buildField('Wage per Day (₹)', _wageController, keyboardType: TextInputType.number),
+          _buildField('Wage per Day (₹)', _wageController, keyboardType: TextInputType.number, formatters: [fmtDigits], maxLength: 5, errorKey: 'wage'),
           const SizedBox(height: 14),
-          _buildField('Workers Needed', _workersController, keyboardType: TextInputType.number),
+          _buildField('Workers Needed', _workersController, keyboardType: TextInputType.number, formatters: [fmtDigits], maxLength: 3, errorKey: 'workers'),
           const SizedBox(height: 14),
-          _buildField('Start Date', _dateController),
+          _buildField('Start Date', _dateController, maxLength: 40, errorKey: 'date'),
           const SizedBox(height: 14),
-          _buildField('Number of Days', _daysController),
+          _buildField('Number of Days', _daysController, maxLength: 30, errorKey: 'days'),
           const SizedBox(height: 14),
-          _buildField('Description', _descriptionController),
+          _buildField('Description', _descriptionController, maxLength: 500, errorKey: 'description'),
           const SizedBox(height: 14),
           _buildField('Additional Details', _additionalController),
           const SizedBox(height: 20),
@@ -3847,14 +4187,35 @@ class _EditJobScreenState extends State<EditJobScreen> {
     );
   }
 
-  Widget _buildField(String label, TextEditingController controller, {TextInputType keyboardType = TextInputType.text}) {
+  Widget _buildField(String label, TextEditingController controller,
+      {TextInputType keyboardType = TextInputType.text,
+        int? maxLength,
+        List<TextInputFormatter>? formatters,
+        String? errorKey}) {
+    final err = errorKey == null ? null : _errors[errorKey];
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
       const SizedBox(height: 6),
       Container(
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFB5D4F4), width: 1)),
-        child: TextField(controller: controller, keyboardType: keyboardType,
-            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: err != null ? const Color(0xFFE24B4A) : const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(
+            controller: controller,
+            keyboardType: keyboardType,
+            maxLength: maxLength,
+            inputFormatters: formatters,
+            onChanged: (_) {
+              if (errorKey != null && _errors[errorKey] != null) {
+                setState(() => _errors.remove(errorKey));
+              }
+            },
+            decoration: InputDecoration(
+                border: InputBorder.none,
+                counterText: '',
+                errorText: err,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
       ),
     ]);
   }
@@ -5077,6 +5438,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     'Housekeeping', 'Factory Worker', 'Warehouse Worker',
   ];
   bool _isSaving = false;
+  final Map<String, String?> _errors = {};
 
   @override
   void initState() {
@@ -5101,7 +5463,28 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     super.dispose();
   }
 
+  bool _validateProfile() {
+    final errs = <String, String?>{
+      'name': Validators.name(_nameController.text),
+      'location': Validators.text(_locationController.text, 'village / location'),
+      'experience': Validators.intInRange(_experienceController.text, 'Experience', 0, 60),
+    }..removeWhere((k, v) => v == null);
+    setState(() {
+      _errors
+        ..clear()
+        ..addAll(errs);
+    });
+    if (errs.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(errs.values.first!), backgroundColor: const Color(0xFFE24B4A)),
+      );
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _saveChanges() async {
+    if (!_validateProfile()) return;
     if (selectedSkills.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please select at least one skill')),
@@ -5156,11 +5539,11 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          _buildField('Full Name', _nameController),
+          _buildField('Full Name', _nameController, formatters: [fmtName], maxLength: 50, errorKey: 'name'),
           const SizedBox(height: 14),
-          _buildField('Village / Location', _locationController),
+          _buildField('Village / Location', _locationController, maxLength: 60, errorKey: 'location'),
           const SizedBox(height: 14),
-          _buildField('Years of Experience', _experienceController, keyboardType: TextInputType.number),
+          _buildField('Years of Experience', _experienceController, keyboardType: TextInputType.number, formatters: [fmtDigits], maxLength: 2, errorKey: 'experience'),
           const SizedBox(height: 20),
           const Text('Skills', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.grey)),
           const SizedBox(height: 10),
@@ -5202,14 +5585,35 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     );
   }
 
-  Widget _buildField(String label, TextEditingController controller, {TextInputType keyboardType = TextInputType.text}) {
+  Widget _buildField(String label, TextEditingController controller,
+      {TextInputType keyboardType = TextInputType.text,
+        int? maxLength,
+        List<TextInputFormatter>? formatters,
+        String? errorKey}) {
+    final err = errorKey == null ? null : _errors[errorKey];
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.grey)),
       const SizedBox(height: 6),
       Container(
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: const Color(0xFFB5D4F4), width: 1)),
-        child: TextField(controller: controller, keyboardType: keyboardType,
-            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: err != null ? const Color(0xFFE24B4A) : const Color(0xFFB5D4F4), width: 1)),
+        child: TextField(
+            controller: controller,
+            keyboardType: keyboardType,
+            maxLength: maxLength,
+            inputFormatters: formatters,
+            onChanged: (_) {
+              if (errorKey != null && _errors[errorKey] != null) {
+                setState(() => _errors.remove(errorKey));
+              }
+            },
+            decoration: InputDecoration(
+                border: InputBorder.none,
+                counterText: '',
+                errorText: err,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14))),
       ),
     ]);
   }
@@ -5230,6 +5634,7 @@ class _OTPLoginScreenState extends State<OTPLoginScreen> {
   final TextEditingController _otpController = TextEditingController();
   bool _otpSent = false;
   bool _isLoading = false;
+  String? _phoneError;
   String _generatedOTP = '';
   int _secondsRemaining = 300;
   Timer? _timer;
@@ -5269,12 +5674,13 @@ class _OTPLoginScreenState extends State<OTPLoginScreen> {
   }
 
   Future<void> _sendOTP() async {
-    if (_phoneController.text.trim().isEmpty) return;
-    if (_phoneController.text.trim().length != 10) {
+    final phoneError = Validators.phone(_phoneController.text);
+    if (phoneError != null) {
+      setState(() => _phoneError = phoneError);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please enter valid 10 digit number'),
-          backgroundColor: Color(0xFFE24B4A),
+        SnackBar(
+          content: Text(phoneError),
+          backgroundColor: const Color(0xFFE24B4A),
         ),
       );
       return;
@@ -5415,6 +5821,10 @@ class _OTPLoginScreenState extends State<OTPLoginScreen> {
                     controller: _phoneController,
                     keyboardType: TextInputType.phone,
                     maxLength: 10,
+                    inputFormatters: [fmtDigits],
+                    onChanged: (_) {
+                      if (_phoneError != null) setState(() => _phoneError = null);
+                    },
                     decoration: InputDecoration(
                       hintText: t('mobile_hint'),
                       hintStyle: const TextStyle(
@@ -5427,6 +5837,7 @@ class _OTPLoginScreenState extends State<OTPLoginScreen> {
                       )),
                       border: InputBorder.none,
                       counterText: '',
+                      errorText: _phoneError,
                       contentPadding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 14),
                     ),
@@ -5536,6 +5947,7 @@ class _OTPLoginScreenState extends State<OTPLoginScreen> {
                     controller: _otpController,
                     keyboardType: TextInputType.number,
                     maxLength: 6,
+                    inputFormatters: [fmtDigits],
                     style: const TextStyle(
                       fontSize: 28,
                       fontWeight: FontWeight.w700,
